@@ -36,7 +36,6 @@ const demoMap = {
       "Easy to pair with protein",
     ],
     know: ["Added ghee or oil changes nutrition"],
-    confidence: 0.95,
   },
 
   rice: {
@@ -62,7 +61,6 @@ const demoMap = {
       "Low fiber",
       "Best paired with dal or vegetables",
     ],
-    confidence: 0.95,
   },
 
   dal: {
@@ -89,7 +87,6 @@ const demoMap = {
       "Mineral-rich",
     ],
     know: ["Sodium and oil depend on recipe"],
-    confidence: 0.95,
   },
 
   paneer: {
@@ -115,7 +112,6 @@ const demoMap = {
       "Can be high in saturated fat",
       "Gravy and oil matter",
     ],
-    confidence: 0.9,
   },
 
   salad: {
@@ -142,7 +138,6 @@ const demoMap = {
       "Low energy density",
     ],
     know: ["Dressings can add sodium and fat"],
-    confidence: 0.9,
   },
 
   fruit: {
@@ -171,22 +166,19 @@ const demoMap = {
     know: [
       "Natural sugar is still part of total carbohydrate",
     ],
-    confidence: 0.9,
   },
 };
 
-function clamp(number, min, max) {
-  return Math.max(min, Math.min(max, number));
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
-function calculateScore(nutrition) {
-  const protein = Number(nutrition.protein_g || 0);
-  const fiber = Number(nutrition.fiber_g || 0);
-  const sugar = Number(nutrition.sugar_g || 0);
-  const saturatedFat = Number(
-    nutrition.saturated_fat_g || 0
-  );
-  const sodium = Number(nutrition.sodium_mg || 0);
+function calculateScore(n) {
+  const protein = Number(n.protein_g || 0);
+  const fiber = Number(n.fiber_g || 0);
+  const sugar = Number(n.sugar_g || 0);
+  const sat = Number(n.saturated_fat_g || 0);
+  const sodium = Number(n.sodium_mg || 0);
 
   let score = 7;
 
@@ -194,154 +186,397 @@ function calculateScore(nutrition) {
   score += Math.min(protein, 25) * 0.06;
 
   score -= Math.max(0, sugar - 8) * 0.08;
-  score -= Math.max(0, saturatedFat - 4) * 0.12;
+  score -= Math.max(0, sat - 4) * 0.12;
   score -= Math.max(0, sodium - 350) * 0.0015;
 
   return Number(clamp(score, 0, 10).toFixed(1));
 }
 
-function findNumber(text, patterns, fallback = 0) {
+function num(value) {
+  if (value == null) return 0;
+
+  const cleaned = String(value)
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "");
+
+  const number = Number(cleaned);
+
+  return Number.isFinite(number) ? number : 0;
+}
+
+function normalize(text) {
+  return String(text || "")
+    .replace(/\r/g, "\n")
+    .replace(/[|]/g, "I")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function findLineIndex(lines, patterns) {
+  return lines.findIndex((line) =>
+    patterns.some((pattern) => pattern.test(line))
+  );
+}
+
+function firstNumberInText(text) {
+  const match = String(text).match(
+    /<?\s*(\d+(?:[.,]\d+)?)/
+  );
+
+  return match ? num(match[1]) : 0;
+}
+
+function valueNearLabel(lines, patterns, unit = "") {
+  const index = findLineIndex(lines, patterns);
+
+  if (index === -1) return 0;
+
+  const current = lines[index];
+
+  let afterLabel = current;
+
   for (const pattern of patterns) {
-    const match = text.match(pattern);
+    afterLabel = afterLabel.replace(pattern, " ");
+  }
 
-    if (match && match[1] !== undefined) {
-      const value = Number(
-        String(match[1])
-          .replace(",", ".")
-          .replace(/[^\d.]/g, "")
+  let match;
+
+  if (unit === "mg") {
+    match = afterLabel.match(
+      /<?\s*(\d+(?:[.,]\d+)?)\s*mg/i
+    );
+  } else if (unit === "g") {
+    match = afterLabel.match(
+      /<?\s*(\d+(?:[.,]\d+)?)\s*g/i
+    );
+  } else {
+    match = afterLabel.match(
+      /<?\s*(\d+(?:[.,]\d+)?)/
+    );
+  }
+
+  if (match) {
+    return num(match[1]);
+  }
+
+  /*
+    Sometimes Tesseract puts the nutrient
+    name on one line and the value on the next.
+  */
+
+  for (
+    let i = index + 1;
+    i <= Math.min(index + 2, lines.length - 1);
+    i++
+  ) {
+    const next = lines[i];
+
+    if (unit === "mg") {
+      match = next.match(
+        /<?\s*(\d+(?:[.,]\d+)?)\s*mg/i
       );
+    } else if (unit === "g") {
+      match = next.match(
+        /<?\s*(\d+(?:[.,]\d+)?)\s*g/i
+      );
+    } else {
+      match = next.match(
+        /<?\s*(\d+(?:[.,]\d+)?)/
+      );
+    }
 
-      if (Number.isFinite(value)) {
-        return value;
+    if (match) {
+      return num(match[1]);
+    }
+  }
+
+  return 0;
+}
+
+function parseNutrition(textInput) {
+  const text = normalize(textInput);
+
+  const lines = text
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  /*
+    Calories
+  */
+
+  let calories = 0;
+
+  const calorieIndex = findLineIndex(lines, [
+    /\bcalories\b/i,
+    /\benergy\b/i,
+  ]);
+
+  if (calorieIndex >= 0) {
+    const sameLine = lines[calorieIndex].match(
+      /(?:calories|energy)\D*(\d{2,4})/i
+    );
+
+    if (sameLine) {
+      calories = num(sameLine[1]);
+    }
+
+    if (!calories) {
+      for (
+        let i = calorieIndex + 1;
+        i <=
+        Math.min(
+          calorieIndex + 3,
+          lines.length - 1
+        );
+        i++
+      ) {
+        const match =
+          lines[i].match(
+            /\b(\d{2,4})\b/
+          );
+
+        if (match) {
+          calories = num(match[1]);
+          break;
+        }
       }
     }
   }
 
-  return fallback;
-}
+  /*
+    Nutrition values
+  */
 
-function normalizeOCR(text) {
-  return String(text || "")
-    .replace(/\r/g, "\n")
-    .replace(/[|]/g, "I")
-    .replace(/[ ]+/g, " ")
-    .trim();
-}
+  const fat_g = valueNearLabel(
+    lines,
+    [/total\s*fat/i],
+    "g"
+  );
 
-function parseNutrition(rawText) {
-  const text = normalizeOCR(rawText);
+  const saturated_fat_g =
+    valueNearLabel(
+      lines,
+      [
+        /saturated\s*fat/i,
+        /\bsat\.?\s*fat/i,
+      ],
+      "g"
+    );
 
-  const calories = findNumber(text, [
-    /calories?\s*[:\-]?\s*(\d{2,4})/i,
-    /energy\s*[:\-]?\s*(\d{2,4})\s*k?cal/i,
-    /(\d{2,4})\s*kcal/i,
-  ]);
+  const sodium_mg =
+    valueNearLabel(
+      lines,
+      [/sodium/i],
+      "mg"
+    );
 
-  const fat_g = findNumber(text, [
-    /total\s*fat\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-    /\bfat\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-  ]);
+  let carbs_g =
+    valueNearLabel(
+      lines,
+      [
+        /total\s*carb(?:ohydrate)?s?\.?/i,
+        /total\s*carbohydrate/i,
+      ],
+      "g"
+    );
 
-  const saturated_fat_g = findNumber(text, [
-    /saturated\s*fat\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-    /saturates?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-  ]);
+  if (!carbs_g) {
+    carbs_g = valueNearLabel(
+      lines,
+      [/carbohydrates?/i],
+      "g"
+    );
+  }
 
-  const sodium_mg = findNumber(text, [
-    /sodium\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*mg/i,
-  ]);
+  let fiber_g =
+    valueNearLabel(
+      lines,
+      [
+        /dietary\s*fib(?:er|re)/i,
+      ],
+      "g"
+    );
 
-  const carbs_g = findNumber(text, [
-    /total\s*carb(?:ohydrate)?s?\.?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-    /carbohydrates?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-  ]);
+  if (!fiber_g) {
+    fiber_g = valueNearLabel(
+      lines,
+      [/\bfib(?:er|re)\b/i],
+      "g"
+    );
+  }
 
-  const fiber_g = findNumber(text, [
-    /dietary\s*fib(?:er|re)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-    /\bfib(?:er|re)\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-  ]);
+  let sugar_g =
+    valueNearLabel(
+      lines,
+      [/total\s*sugars?/i],
+      "g"
+    );
 
-  const sugar_g = findNumber(text, [
-    /total\s*sugars?\s*[:\-]?\s*<?\s*(\d+(?:\.\d+)?)\s*g/i,
-    /\bsugars?\s*[:\-]?\s*<?\s*(\d+(?:\.\d+)?)\s*g/i,
-  ]);
+  if (!sugar_g) {
+    sugar_g = valueNearLabel(
+      lines,
+      [/\bsugars?\b/i],
+      "g"
+    );
+  }
 
-  const protein_g = findNumber(text, [
-    /protein\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*g/i,
-  ]);
+  const protein_g =
+    valueNearLabel(
+      lines,
+      [/protein/i],
+      "g"
+    );
+
+  /*
+    Serving size
+  */
+
+  let serving = "";
+
+  const servingIndex =
+    findLineIndex(lines, [
+      /serving\s*size/i,
+    ]);
+
+  if (servingIndex >= 0) {
+    serving = lines[
+      servingIndex
+    ]
+      .replace(
+        /.*serving\s*size\s*[:\-]?/i,
+        ""
+      )
+      .trim();
+
+    if (
+      !serving ||
+      serving.length < 2
+    ) {
+      serving =
+        lines[
+          servingIndex + 1
+        ] || "";
+    }
+  }
 
   return {
-    calories,
-    protein_g,
-    carbs_g,
-    fat_g,
-    saturated_fat_g,
-    fiber_g,
-    sugar_g,
-    sodium_mg,
+    serving,
+
+    nutrition: {
+      calories,
+      protein_g,
+      carbs_g,
+      fat_g,
+      saturated_fat_g,
+      fiber_g,
+      sugar_g,
+      sodium_mg,
+    },
   };
 }
 
-function hasEnoughNutrition(nutrition) {
-  const values = [
-    nutrition.calories,
-    nutrition.protein_g,
-    nutrition.carbs_g,
-    nutrition.fat_g,
-    nutrition.fiber_g,
-    nutrition.sugar_g,
-    nutrition.sodium_mg,
+function mergeNutrition(a, b, c) {
+  const keys = [
+    "calories",
+    "protein_g",
+    "carbs_g",
+    "fat_g",
+    "saturated_fat_g",
+    "fiber_g",
+    "sugar_g",
+    "sodium_mg",
   ];
 
-  return values.filter((value) => Number(value) > 0).length >= 3;
+  const result = {};
+
+  for (const key of keys) {
+    /*
+      Priority:
+      1. cropped enhanced OCR
+      2. full enhanced OCR
+      3. original OCR
+    */
+
+    result[key] =
+      Number(a?.[key] || 0) ||
+      Number(b?.[key] || 0) ||
+      Number(c?.[key] || 0) ||
+      0;
+  }
+
+  return result;
 }
 
-function buildInsights(nutrition) {
+function enoughData(n) {
+  const important = [
+    n.calories,
+    n.fat_g,
+    n.carbs_g,
+    n.protein_g,
+    n.sodium_mg,
+  ];
+
+  return (
+    important.filter(
+      (value) => Number(value) > 0
+    ).length >= 3
+  );
+}
+
+function buildInsights(n) {
   const good = [];
   const know = [];
 
-  if (nutrition.fiber_g >= 5) {
+  if (n.fiber_g >= 5) {
     good.push("Good source of fiber");
   }
 
-  if (nutrition.protein_g >= 10) {
+  if (n.protein_g >= 10) {
     good.push("Useful protein content");
   }
 
-  if (nutrition.sugar_g > 0 && nutrition.sugar_g <= 5) {
+  if (
+    n.sugar_g > 0 &&
+    n.sugar_g <= 5
+  ) {
     good.push("Low sugar per serving");
   }
 
-  if (nutrition.sodium_mg > 0 && nutrition.sodium_mg <= 200) {
+  if (
+    n.sodium_mg > 0 &&
+    n.sodium_mg <= 200
+  ) {
     good.push("Relatively low sodium");
   }
 
-  if (nutrition.sodium_mg > 500) {
+  if (n.sodium_mg > 500) {
     know.push("High sodium per serving");
   }
 
-  if (nutrition.sugar_g > 15) {
+  if (n.sugar_g > 15) {
     know.push("Higher total sugar");
   }
 
-  if (nutrition.saturated_fat_g > 5) {
+  if (n.saturated_fat_g > 5) {
     know.push("Higher saturated fat");
   }
 
   if (
-    nutrition.fiber_g > 0 &&
-    nutrition.fiber_g < 3
+    n.fiber_g > 0 &&
+    n.fiber_g < 3
   ) {
     know.push("Low fiber");
   }
 
-  if (good.length === 0) {
+  if (!good.length) {
     good.push(
-      "Nutrition information was successfully detected"
+      "Nutrition label successfully scanned"
     );
   }
 
-  if (know.length === 0) {
+  if (!know.length) {
     know.push(
       "Check serving size and ingredients for additional context"
     );
@@ -354,81 +589,275 @@ function buildInsights(nutrition) {
 }
 
 function loadTesseract() {
-  return new Promise((resolve, reject) => {
-    if (window.Tesseract) {
-      resolve(window.Tesseract);
-      return;
-    }
-
-    const existing = document.getElementById(
-      "edible-tesseract"
-    );
-
-    if (existing) {
-      existing.addEventListener("load", () =>
-        resolve(window.Tesseract)
-      );
-
-      existing.addEventListener("error", reject);
-
-      return;
-    }
-
-    const script = document.createElement("script");
-
-    script.id = "edible-tesseract";
-
-    script.src =
-      "https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js";
-
-    script.async = true;
-
-    script.onload = () => {
+  return new Promise(
+    (resolve, reject) => {
       if (window.Tesseract) {
         resolve(window.Tesseract);
-      } else {
-        reject(
-          new Error("OCR library could not start.")
-        );
+        return;
       }
-    };
 
-    script.onerror = () => {
-      reject(
-        new Error(
-          "Could not download the free OCR engine."
-        )
+      const existing =
+        document.getElementById(
+          "edible-tesseract"
+        );
+
+      if (existing) {
+        existing.onload = () =>
+          resolve(
+            window.Tesseract
+          );
+
+        existing.onerror =
+          reject;
+
+        return;
+      }
+
+      const script =
+        document.createElement(
+          "script"
+        );
+
+      script.id =
+        "edible-tesseract";
+
+      script.src =
+        "https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js";
+
+      script.async = true;
+
+      script.onload = () => {
+        if (
+          window.Tesseract
+        ) {
+          resolve(
+            window.Tesseract
+          );
+        } else {
+          reject(
+            new Error(
+              "OCR could not start."
+            )
+          );
+        }
+      };
+
+      script.onerror = () =>
+        reject(
+          new Error(
+            "Could not load the OCR scanner."
+          )
+        );
+
+      document.head.appendChild(
+        script
       );
-    };
+    }
+  );
+}
 
-    document.head.appendChild(script);
-  });
+function loadImage(file) {
+  return new Promise(
+    (resolve, reject) => {
+      const image = new Image();
+
+      const url =
+        URL.createObjectURL(file);
+
+      image.onload = () => {
+        URL.revokeObjectURL(
+          url
+        );
+
+        resolve(image);
+      };
+
+      image.onerror = () => {
+        URL.revokeObjectURL(
+          url
+        );
+
+        reject(
+          new Error(
+            "Could not open image."
+          )
+        );
+      };
+
+      image.src = url;
+    }
+  );
+}
+
+async function preprocessImage(
+  file,
+  cropRatio = 1
+) {
+  const image =
+    await loadImage(file);
+
+  /*
+    On labels with:
+    nutrient | per serving | per package
+
+    cropRatio 0.76 keeps nutrient names +
+    first nutrition column and removes
+    most of the per-package column.
+  */
+
+  const sourceWidth =
+    image.naturalWidth *
+    cropRatio;
+
+  const sourceHeight =
+    image.naturalHeight;
+
+  /*
+    Upscale for OCR.
+  */
+
+  const scale = 2.2;
+
+  const canvas =
+    document.createElement(
+      "canvas"
+    );
+
+  canvas.width =
+    Math.round(
+      sourceWidth * scale
+    );
+
+  canvas.height =
+    Math.round(
+      sourceHeight * scale
+    );
+
+  const ctx =
+    canvas.getContext(
+      "2d",
+      {
+        willReadFrequently: true,
+      }
+    );
+
+  ctx.drawImage(
+    image,
+    0,
+    0,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  /*
+    Grayscale + contrast enhancement.
+  */
+
+  const imgData =
+    ctx.getImageData(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+  const data =
+    imgData.data;
+
+  for (
+    let i = 0;
+    i < data.length;
+    i += 4
+  ) {
+    const gray =
+      data[i] * 0.299 +
+      data[i + 1] * 0.587 +
+      data[i + 2] * 0.114;
+
+    /*
+      Strong contrast.
+    */
+
+    let value =
+      (gray - 128) * 1.65 +
+      128;
+
+    value =
+      clamp(
+        value,
+        0,
+        255
+      );
+
+    /*
+      Light thresholding,
+      but keep antialiasing.
+    */
+
+    if (value > 210) {
+      value = 255;
+    }
+
+    if (value < 55) {
+      value = 0;
+    }
+
+    data[i] = value;
+    data[i + 1] =
+      value;
+    data[i + 2] =
+      value;
+  }
+
+  ctx.putImageData(
+    imgData,
+    0,
+    0
+  );
+
+  return canvas;
 }
 
 export default function Page() {
-  const [screen, setScreen] = useState("home");
+  const [screen, setScreen] =
+    useState("home");
 
-  const [mode, setMode] = useState("packaged");
+  const [mode, setMode] =
+    useState("packaged");
 
-  const [photo, setPhoto] = useState(null);
+  const [photo, setPhoto] =
+    useState(null);
 
-  const [result, setResult] = useState(null);
+  const [result, setResult] =
+    useState(null);
 
-  const [error, setError] = useState("");
+  const [error, setError] =
+    useState("");
 
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] =
+    useState([]);
 
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] =
+    useState(0);
 
-  const [progressText, setProgressText] =
-    useState("Preparing scanner…");
+  const [
+    progressText,
+    setProgressText,
+  ] = useState(
+    "Preparing scanner…"
+  );
 
   useEffect(() => {
     try {
       setHistory(
         JSON.parse(
-          localStorage.getItem("edible_history") ||
-            "[]"
+          localStorage.getItem(
+            "edible_history"
+          ) || "[]"
         )
       );
     } catch {}
@@ -438,10 +867,13 @@ export default function Page() {
     const next = [
       {
         name: item.name,
-        emoji: item.emoji || "🍽️",
+        emoji:
+          item.emoji ||
+          "🍽️",
         score: item.score,
         type: item.type,
-        date: new Date().toISOString(),
+        date:
+          new Date().toISOString(),
       },
       ...history,
     ].slice(0, 20);
@@ -456,19 +888,24 @@ export default function Page() {
     } catch {}
   }
 
-  async function choosePhoto(file) {
+  async function choosePhoto(
+    file
+  ) {
     if (!file) return;
 
-    const url = URL.createObjectURL(file);
+    const url =
+      URL.createObjectURL(file);
 
     setPhoto({
       file,
       url,
     });
 
-    if (mode === "meal") {
+    if (
+      mode === "meal"
+    ) {
       setError(
-        "Meal-photo recognition requires a vision model. Free scanning currently supports packaged-food nutrition labels."
+        "Meal-photo recognition is not included in free OCR mode yet."
       );
 
       setScreen("scan");
@@ -476,150 +913,293 @@ export default function Page() {
       return;
     }
 
-    await analyzeLabel(file);
+    await analyzeLabel(
+      file
+    );
   }
 
-  async function analyzeLabel(file) {
-    setError("");
-
-    setProgress(0);
-
-    setProgressText("Loading free OCR…");
-
-    setScreen("loading");
-
-    try {
-      const Tesseract = await loadTesseract();
-
-      setProgressText("Reading nutrition label…");
-
-      const output = await Tesseract.recognize(
-        file,
+  async function runOCR(
+    Tesseract,
+    image,
+    stageStart,
+    stageEnd
+  ) {
+    const result =
+      await Tesseract.recognize(
+        image,
         "eng",
         {
-          logger: (message) => {
+          logger: (
+            message
+          ) => {
             if (
               message.status ===
               "recognizing text"
             ) {
-              const percent = Math.round(
-                (message.progress || 0) * 100
+              const local =
+                message.progress ||
+                0;
+
+              const total =
+                stageStart +
+                local *
+                  (stageEnd -
+                    stageStart);
+
+              const percent =
+                Math.round(
+                  total
+                );
+
+              setProgress(
+                percent
               );
 
-              setProgress(percent);
-
               setProgressText(
-                `Reading nutrition label… ${percent}%`
-              );
-            } else if (message.status) {
-              setProgressText(
-                message.status
-                  .replace(/_/g, " ")
-                  .replace(/\b\w/g, (letter) =>
-                    letter.toUpperCase()
-                  )
+                `Reading label… ${percent}%`
               );
             }
           },
         }
       );
 
-      const rawText =
-        output?.data?.text || "";
+    return (
+      result?.data?.text ||
+      ""
+    );
+  }
 
-      console.log(
-        "EDIBLE OCR TEXT:",
-        rawText
+  async function analyzeLabel(
+    file
+  ) {
+    setError("");
+    setProgress(0);
+    setScreen("loading");
+
+    try {
+      setProgressText(
+        "Preparing image…"
       );
 
-      const nutrition =
-        parseNutrition(rawText);
+      const Tesseract =
+        await loadTesseract();
+
+      /*
+        Pass 1:
+        Enhanced left 76% of label.
+
+        This is the important pass for
+        two-column US Nutrition Facts.
+      */
+
+      setProgressText(
+        "Enhancing serving column…"
+      );
+
+      const cropped =
+        await preprocessImage(
+          file,
+          0.76
+        );
+
+      const croppedText =
+        await runOCR(
+          Tesseract,
+          cropped,
+          5,
+          48
+        );
 
       console.log(
-        "EDIBLE NUTRITION:",
+        "CROPPED OCR:",
+        croppedText
+      );
+
+      /*
+        Pass 2:
+        Enhanced full label.
+      */
+
+      setProgressText(
+        "Cross-checking nutrition…"
+      );
+
+      const full =
+        await preprocessImage(
+          file,
+          1
+        );
+
+      const fullText =
+        await runOCR(
+          Tesseract,
+          full,
+          48,
+          82
+        );
+
+      console.log(
+        "FULL OCR:",
+        fullText
+      );
+
+      /*
+        Pass 3:
+        Original image as fallback.
+      */
+
+      setProgressText(
+        "Verifying values…"
+      );
+
+      const originalText =
+        await runOCR(
+          Tesseract,
+          file,
+          82,
+          98
+        );
+
+      console.log(
+        "ORIGINAL OCR:",
+        originalText
+      );
+
+      const croppedParsed =
+        parseNutrition(
+          croppedText
+        );
+
+      const fullParsed =
+        parseNutrition(
+          fullText
+        );
+
+      const originalParsed =
+        parseNutrition(
+          originalText
+        );
+
+      const nutrition =
+        mergeNutrition(
+          croppedParsed
+            .nutrition,
+          fullParsed
+            .nutrition,
+          originalParsed
+            .nutrition
+        );
+
+      console.log(
+        "FINAL NUTRITION:",
         nutrition
       );
 
-      if (!hasEnoughNutrition(nutrition)) {
+      if (
+        !enoughData(
+          nutrition
+        )
+      ) {
         throw new Error(
-          "I couldn't read enough values. Take a close, straight photo showing the complete Nutrition Facts panel."
+          "I couldn't reliably read the nutrition values. Try a straight, close photo with the full label visible."
         );
       }
 
+      setProgress(100);
+
       const score =
-        calculateScore(nutrition);
+        calculateScore(
+          nutrition
+        );
 
       const insights =
-        buildInsights(nutrition);
+        buildInsights(
+          nutrition
+        );
 
-      const confidence = clamp(
-        Number(
-          output?.data?.confidence || 0
-        ) / 100,
-        0,
-        1
-      );
+      const serving =
+        croppedParsed
+          .serving ||
+        fullParsed.serving ||
+        originalParsed
+          .serving ||
+        "Per serving";
 
-      const scannedResult = {
-        name: "Scanned Packaged Food",
+      const scanned = {
+        name:
+          "Scanned Packaged Food",
 
         emoji: "🏷️",
 
-        type: "packaged",
+        type:
+          "packaged",
 
-        serving:
-          "Per visible label serving",
+        serving,
 
         score,
 
         nutrition,
 
         summary:
-          "Edible read the nutrition label directly on your device and calculated this score using consistent scoring rules.",
+          "Edible enhanced the label, isolated the per-serving column and cross-checked multiple OCR readings before calculating the score.",
 
-        good: insights.good,
+        good:
+          insights.good,
 
-        know: insights.know,
+        know:
+          insights.know,
 
-        confidence,
-
-        source: "device-ocr",
+        source:
+          "multi-pass-device-ocr",
       };
 
-      setResult(scannedResult);
+      setResult(scanned);
 
-      saveHistory(scannedResult);
+      saveHistory(
+        scanned
+      );
 
-      setScreen("result");
+      setScreen(
+        "result"
+      );
     } catch (err) {
       console.error(err);
 
       setError(
         err?.message ||
-          "Could not read this label. Try a clearer photo."
+          "Could not read this label."
       );
 
-      setScreen("scan");
+      setScreen(
+        "scan"
+      );
     }
   }
 
   function openDemo(key) {
-    const item = demoMap[key];
+    const item =
+      demoMap[key];
 
     setResult(item);
 
     saveHistory(item);
 
-    setScreen("result");
+    setScreen(
+      "result"
+    );
   }
 
   function packagedDemo() {
     const item = {
-      name: "Wholegrain Oat Crunch",
+      name:
+        "Wholegrain Oat Crunch",
       emoji: "🌾",
-      type: "packaged",
-      serving: "1 serving",
+      type:
+        "packaged",
+      serving:
+        "1 serving",
       score: 8.7,
+
       nutrition: {
         calories: 370,
         protein_g: 12,
@@ -630,22 +1210,28 @@ export default function Page() {
         sugar_g: 4,
         sodium_mg: 210,
       },
+
       summary:
         "High fiber with useful protein and relatively low sugar.",
+
       good: [
         "High fiber",
         "Wholegrain base",
         "Low sugar",
       ],
-      know: ["Moderate sodium"],
-      confidence: 1,
+
+      know: [
+        "Moderate sodium",
+      ],
     };
 
     setResult(item);
 
     saveHistory(item);
 
-    setScreen("result");
+    setScreen(
+      "result"
+    );
   }
 
   return (
@@ -656,7 +1242,8 @@ export default function Page() {
             edible
           </div>
 
-          {screen === "home" && (
+          {screen ===
+            "home" && (
             <div className="tag">
               Know what you eat.
             </div>
@@ -666,32 +1253,40 @@ export default function Page() {
         <button
           className="settings"
           onClick={() =>
-            setScreen("profile")
+            setScreen(
+              "profile"
+            )
           }
         >
           ⚙
         </button>
       </header>
 
-      {screen === "home" && (
+      {screen ===
+        "home" && (
         <main>
-          <h1>Scan any food.</h1>
+          <h1>
+            Scan any food.
+          </h1>
 
           <p className="sub">
-            Understand what’s inside in
-            seconds.
+            Understand what’s
+            inside in seconds.
           </p>
 
           <div className="modebar">
             <button
               className={
                 "modepill " +
-                (mode === "packaged"
+                (mode ===
+                "packaged"
                   ? "active"
                   : "")
               }
               onClick={() =>
-                setMode("packaged")
+                setMode(
+                  "packaged"
+                )
               }
             >
               Packaged Food
@@ -700,7 +1295,8 @@ export default function Page() {
             <button
               className={
                 "modepill " +
-                (mode === "meal"
+                (mode ===
+                "meal"
                   ? "active"
                   : "")
               }
@@ -715,25 +1311,30 @@ export default function Page() {
           <button
             className="hero"
             onClick={() =>
-              setScreen("scan")
+              setScreen(
+                "scan"
+              )
             }
           >
             <div className="camcircle">
-              {mode === "packaged"
+              {mode ===
+              "packaged"
                 ? "📷"
                 : "🍽️"}
             </div>
 
             <div className="herobottom">
               <strong>
-                {mode === "packaged"
+                {mode ===
+                "packaged"
                   ? "Scan Food"
                   : "Scan a Meal"}
               </strong>
 
               <span>
-                {mode === "packaged"
-                  ? "Nutrition label • Free device OCR"
+                {mode ===
+                "packaged"
+                  ? "Nutrition label • Multi-pass OCR"
                   : "Meal recognition coming next"}
               </span>
             </div>
@@ -743,47 +1344,65 @@ export default function Page() {
             <button
               className="q"
               onClick={() => {
-                setMode("packaged");
-                setScreen("scan");
+                setMode(
+                  "packaged"
+                );
+
+                setScreen(
+                  "scan"
+                );
               }}
             >
               <div className="qicon">
                 ▦
               </div>
 
-              <strong>Scan Label</strong>
-
-              <span>Free OCR</span>
-            </button>
-
-            <button
-              className="q"
-              onClick={() =>
-                setScreen("compare")
-              }
-            >
-              <div className="qicon">
-                ⇄
-              </div>
-
-              <strong>Compare</strong>
+              <strong>
+                Scan Label
+              </strong>
 
               <span>
-                Find the better choice
+                Smart OCR
               </span>
             </button>
 
             <button
               className="q"
               onClick={() =>
-                setScreen("history")
+                setScreen(
+                  "compare"
+                )
+              }
+            >
+              <div className="qicon">
+                ⇄
+              </div>
+
+              <strong>
+                Compare
+              </strong>
+
+              <span>
+                Find the better
+                choice
+              </span>
+            </button>
+
+            <button
+              className="q"
+              onClick={() =>
+                setScreen(
+                  "history"
+                )
               }
             >
               <div className="qicon">
                 ◷
               </div>
 
-              <strong>History</strong>
+              <strong>
+                History
+              </strong>
 
               <span>
                 Your scanned foods
@@ -792,22 +1411,34 @@ export default function Page() {
           </div>
 
           <div className="sectionrow">
-            <h3>Food Categories</h3>
+            <h3>
+              Food Categories
+            </h3>
 
-            <span>Explore</span>
+            <span>
+              Explore
+            </span>
           </div>
 
           <div className="cats">
             {demoFoods.map(
-              ([name, emoji, key]) => (
+              ([
+                name,
+                emoji,
+                key,
+              ]) => (
                 <button
                   key={key}
                   className="cat"
                   onClick={() =>
-                    openDemo(key)
+                    openDemo(
+                      key
+                    )
                   }
                 >
-                  <em>{emoji}</em>
+                  <em>
+                    {emoji}
+                  </em>
 
                   {name}
                 </button>
@@ -822,38 +1453,45 @@ export default function Page() {
 
             <div>
               <strong>
-                Small choices. Big impact.
+                Small choices.
+                Big impact.
               </strong>
 
               <p>
-                Make smarter food choices,
-                one scan at a time.
+                Make smarter food
+                choices, one scan at
+                a time.
               </p>
             </div>
           </div>
         </main>
       )}
 
-      {screen === "scan" && (
+      {screen ===
+        "scan" && (
         <main>
           <button
             className="back"
             onClick={() =>
-              setScreen("home")
+              setScreen(
+                "home"
+              )
             }
           >
             ← Home
           </button>
 
           <h2>
-            {mode === "packaged"
+            {mode ===
+            "packaged"
               ? "Scan nutrition label"
               : "Scan food or a meal"}
           </h2>
 
           <p className="sub">
-            {mode === "packaged"
-              ? "Take a clear, straight photo of the Nutrition Facts panel."
+            {mode ===
+            "packaged"
+              ? "Take a straight photo with the complete Nutrition Facts panel visible."
               : "Free meal-photo recognition is not enabled yet."}
           </p>
 
@@ -861,7 +1499,7 @@ export default function Page() {
             <img
               className="preview"
               src={photo.url}
-              alt="Selected food"
+              alt="Selected label"
             />
           ) : (
             <div className="camera">
@@ -874,24 +1512,21 @@ export default function Page() {
                   fontSize: 46,
                 }}
               >
-                {mode === "packaged"
-                  ? "🏷️"
-                  : "🍽️"}
+                🏷️
               </div>
 
               <div className="camtext">
                 <strong>
-                  {mode === "packaged"
-                    ? "Keep the full label inside the frame"
-                    : "Meal scanning coming soon"}
+                  Keep the complete
+                  label visible
                 </strong>
 
                 <br />
 
                 <span>
-                  {mode === "packaged"
-                    ? "OCR runs directly on your device"
-                    : "No paid AI is being used"}
+                  Edible will isolate
+                  the per-serving
+                  column automatically
                 </span>
               </div>
             </div>
@@ -905,9 +1540,13 @@ export default function Page() {
                 type="file"
                 accept="image/*"
                 capture="environment"
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   choosePhoto(
-                    event.target.files?.[0]
+                    event
+                      .target
+                      .files?.[0]
                   )
                 }
               />
@@ -919,9 +1558,13 @@ export default function Page() {
               <input
                 type="file"
                 accept="image/*"
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   choosePhoto(
-                    event.target.files?.[0]
+                    event
+                      .target
+                      .files?.[0]
                   )
                 }
               />
@@ -937,12 +1580,19 @@ export default function Page() {
           <button
             className="secondary"
             style={{
-              width: "100%",
-              marginTop: 10,
+              width:
+                "100%",
+              marginTop:
+                10,
             }}
             onClick={() => {
-              if (mode === "meal") {
-                openDemo("chapati");
+              if (
+                mode ===
+                "meal"
+              ) {
+                openDemo(
+                  "chapati"
+                );
               } else {
                 packagedDemo();
               }
@@ -953,64 +1603,71 @@ export default function Page() {
         </main>
       )}
 
-      {screen === "loading" && (
+      {screen ===
+        "loading" && (
         <main className="loading">
           <div className="spinner" />
 
           <h2>
-            Understanding your food
+            Understanding your
+            food
           </h2>
 
           <p className="sub">
             {progressText}
           </p>
 
-          {progress > 0 && (
+          <div
+            style={{
+              width: "80%",
+              maxWidth: 300,
+              height: 10,
+              background:
+                "#E6ECE8",
+              borderRadius: 20,
+              overflow:
+                "hidden",
+              marginTop: 15,
+            }}
+          >
             <div
               style={{
-                width: "80%",
-                maxWidth: 300,
-                height: 9,
-                borderRadius: 20,
-                background: "#E6ECE8",
-                overflow: "hidden",
-                marginTop: 15,
+                width: `${progress}%`,
+                height: "100%",
+                background:
+                  "var(--forest)",
+                transition:
+                  "width .2s ease",
               }}
-            >
-              <div
-                style={{
-                  width: `${progress}%`,
-                  height: "100%",
-                  background:
-                    "var(--forest)",
-                  transition:
-                    "width .25s ease",
-                }}
-              />
-            </div>
-          )}
+            />
+          </div>
 
           <p
             className="small"
             style={{
-              marginTop: 18,
-              textAlign: "center",
+              textAlign:
+                "center",
+              marginTop:
+                17,
             }}
           >
-            First scan may take a little
-            longer while the free OCR
-            engine loads.
+            Edible is reading the
+            label more than once to
+            improve accuracy.
           </p>
         </main>
       )}
 
-      {screen === "result" &&
+      {screen ===
+        "result" &&
         result && (
           <main>
             <button
               className="back"
               onClick={() =>
-                setScreen("scan")
+                setScreen(
+                  "scan"
+                )
               }
             >
               ← Scanner
@@ -1020,21 +1677,19 @@ export default function Page() {
               <img
                 className="preview"
                 src={photo.url}
-                alt="Analyzed food"
+                alt="Analyzed label"
               />
             )}
 
             <div className="card product">
               <div className="thumb">
-                {result.emoji || "🍽️"}
+                {result.emoji ||
+                  "🏷️"}
               </div>
 
               <div>
                 <div className="small">
-                  {result.type ===
-                  "packaged"
-                    ? "Packaged food"
-                    : "Food / Meal"}
+                  Packaged food
                 </div>
 
                 <div className="pname">
@@ -1042,8 +1697,7 @@ export default function Page() {
                 </div>
 
                 <div className="small">
-                  {result.serving ||
-                    "Estimated portion"}
+                  {result.serving}
                 </div>
               </div>
             </div>
@@ -1053,13 +1707,16 @@ export default function Page() {
                 className="ring"
                 style={{
                   background: `conic-gradient(${
-                    result.score >= 8
+                    result.score >=
+                    8
                       ? "var(--leaf)"
-                      : result.score >= 6.5
+                      : result.score >=
+                        6.5
                       ? "#F1C94E"
                       : "#E48A56"
                   } ${
-                    result.score * 10
+                    result.score *
+                    10
                   }%, #EDF0EB 0)`,
                 }}
               >
@@ -1070,16 +1727,21 @@ export default function Page() {
                     ).toFixed(1)}
                   </div>
 
-                  <small>/10</small>
+                  <small>
+                    /10
+                  </small>
                 </div>
               </div>
 
               <div className="badge">
-                {result.score >= 9
+                {result.score >=
+                9
                   ? "EXCELLENT"
-                  : result.score >= 8
+                  : result.score >=
+                    8
                   ? "VERY GOOD"
-                  : result.score >= 6.5
+                  : result.score >=
+                    6.5
                   ? "GOOD"
                   : "FAIR"}
               </div>
@@ -1087,7 +1749,8 @@ export default function Page() {
               <p
                 className="sub"
                 style={{
-                  margin: "13px 0",
+                  margin:
+                    "13px 0",
                 }}
               >
                 {result.summary}
@@ -1096,24 +1759,26 @@ export default function Page() {
               <div className="pills">
                 <span className="pill">
                   🔥{" "}
-                  {Math.round(
-                    result.nutrition
-                      .calories || 0
-                  )}{" "}
+                  {result
+                    .nutrition
+                    .calories}
+                  {" "}
                   kcal
                 </span>
 
                 <span className="pill">
                   💪{" "}
-                  {result.nutrition
-                    .protein_g || 0}
+                  {result
+                    .nutrition
+                    .protein_g}
                   g protein
                 </span>
 
                 <span className="pill">
                   🌾{" "}
-                  {result.nutrition
-                    .fiber_g || 0}
+                  {result
+                    .nutrition
+                    .fiber_g}
                   g fiber
                 </span>
               </div>
@@ -1121,7 +1786,8 @@ export default function Page() {
 
             <div className="card">
               <h3>
-                Nutrition information
+                Nutrition
+                information
               </h3>
 
               <div className="metrics">
@@ -1131,10 +1797,11 @@ export default function Page() {
                   </small>
 
                   <strong>
-                    {Math.round(
-                      result.nutrition
-                        .calories || 0
-                    )}
+                    {
+                      result
+                        .nutrition
+                        .calories
+                    }
                   </strong>
                 </div>
 
@@ -1144,8 +1811,11 @@ export default function Page() {
                   </small>
 
                   <strong>
-                    {result.nutrition
-                      .protein_g || 0}
+                    {
+                      result
+                        .nutrition
+                        .protein_g
+                    }
                     g
                   </strong>
                 </div>
@@ -1156,18 +1826,41 @@ export default function Page() {
                   </small>
 
                   <strong>
-                    {result.nutrition
-                      .carbs_g || 0}
+                    {
+                      result
+                        .nutrition
+                        .carbs_g
+                    }
                     g
                   </strong>
                 </div>
 
                 <div className="metric">
-                  <small>Fat</small>
+                  <small>
+                    Fat
+                  </small>
 
                   <strong>
-                    {result.nutrition
-                      .fat_g || 0}
+                    {
+                      result
+                        .nutrition
+                        .fat_g
+                    }
+                    g
+                  </strong>
+                </div>
+
+                <div className="metric">
+                  <small>
+                    Saturated Fat
+                  </small>
+
+                  <strong>
+                    {
+                      result
+                        .nutrition
+                        .saturated_fat_g
+                    }
                     g
                   </strong>
                 </div>
@@ -1178,8 +1871,26 @@ export default function Page() {
                   </small>
 
                   <strong>
-                    {result.nutrition
-                      .fiber_g || 0}
+                    {
+                      result
+                        .nutrition
+                        .fiber_g
+                    }
+                    g
+                  </strong>
+                </div>
+
+                <div className="metric">
+                  <small>
+                    Sugar
+                  </small>
+
+                  <strong>
+                    {
+                      result
+                        .nutrition
+                        .sugar_g
+                    }
                     g
                   </strong>
                 </div>
@@ -1190,10 +1901,11 @@ export default function Page() {
                   </small>
 
                   <strong>
-                    {Math.round(
-                      result.nutrition
-                        .sodium_mg || 0
-                    )}
+                    {
+                      result
+                        .nutrition
+                        .sodium_mg
+                    }
                     mg
                   </strong>
                 </div>
@@ -1202,12 +1914,23 @@ export default function Page() {
 
             <div className="card softmint">
               <h3>
-                What’s Good Here? 🌱
+                What’s Good Here?
+                🌱
               </h3>
 
-              {(result.good || []).map(
-                (item, index) => (
-                  <p key={index}>
+              {(
+                result.good ||
+                []
+              ).map(
+                (
+                  item,
+                  index
+                ) => (
+                  <p
+                    key={
+                      index
+                    }
+                  >
                     ✓ {item}
                   </p>
                 )
@@ -1215,50 +1938,72 @@ export default function Page() {
             </div>
 
             <div className="card softyellow">
-              <h3>Things to Know</h3>
+              <h3>
+                Things to Know
+              </h3>
 
               {(
-                result.know || [
-                  "No major concerns detected.",
-                ]
-              ).map((item, index) => (
-                <p key={index}>
-                  • {item}
-                </p>
-              ))}
+                result.know ||
+                []
+              ).map(
+                (
+                  item,
+                  index
+                ) => (
+                  <p
+                    key={
+                      index
+                    }
+                  >
+                    • {item}
+                  </p>
+                )
+              )}
             </div>
 
-            {result.source ===
-              "device-ocr" && (
-              <div className="card softblue">
-                <h3>
-                  Free device scan 📱
-                </h3>
+            <div className="card softblue">
+              <h3>
+                Multi-pass scan 📱
+              </h3>
 
-                <p
-                  className="small"
-                  style={{
-                    marginBottom: 0,
-                  }}
-                >
-                  The label was read
-                  directly on your device.
-                  No paid OpenAI request
-                  was used.
-                </p>
-              </div>
-            )}
+              <p
+                className="small"
+                style={{
+                  marginBottom:
+                    0,
+                }}
+              >
+                The image was
+                enhanced and scanned
+                several times directly
+                on your device. No
+                paid AI request was
+                used.
+              </p>
+            </div>
 
             <button
               className="primary"
               style={{
-                width: "100%",
+                width:
+                  "100%",
               }}
               onClick={() => {
-                setPhoto(null);
-                setResult(null);
-                setError("");
-                setScreen("scan");
+                setPhoto(
+                  null
+                );
+
+                setResult(
+                  null
+                );
+
+                setError(
+                  ""
+                );
+
+                setScreen(
+                  "scan"
+                );
               }}
             >
               Scan Another
@@ -1266,163 +2011,93 @@ export default function Page() {
           </main>
         )}
 
-      {screen === "compare" && (
+      {screen ===
+        "compare" && (
         <main>
           <button
             className="back"
             onClick={() =>
-              setScreen("home")
+              setScreen(
+                "home"
+              )
             }
           >
             ← Home
           </button>
 
-          <h2>Compare</h2>
+          <h2>
+            Compare
+          </h2>
 
           <p className="sub">
-            Pick the better choice at a
-            glance.
+            Pick the better choice
+            at a glance.
           </p>
 
           <div className="foodgrid">
-            <div
-              className="card"
-              style={{
-                margin: 0,
-                textAlign: "center",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 42,
-                }}
-              >
-                🌾
-              </div>
-
-              <strong>
-                Oat Crunch
-              </strong>
-
-              <div
-                className="score"
-                style={{
-                  fontSize: 37,
-                  marginTop: 6,
-                }}
-              >
+            <div className="card">
+              🌾 Oat Crunch
+              <div className="score">
                 8.7
               </div>
             </div>
 
-            <div
-              className="card"
-              style={{
-                margin: 0,
-                textAlign: "center",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 42,
-                }}
-              >
-                🍫
-              </div>
-
-              <strong>
-                Protein Bar
-              </strong>
-
-              <div
-                className="score"
-                style={{
-                  fontSize: 37,
-                  marginTop: 6,
-                }}
-              >
+            <div className="card">
+              🍫 Protein Bar
+              <div className="score">
                 6.4
               </div>
             </div>
           </div>
-
-          <div
-            className="card softmint"
-            style={{
-              marginTop: 14,
-            }}
-          >
-            <h3>
-              Choose Oat Crunch 🏆
-            </h3>
-
-            <p>✓ Less sugar</p>
-
-            <p>✓ More fiber</p>
-
-            <p>
-              ✓ Better overall nutrition
-              profile
-            </p>
-          </div>
         </main>
       )}
 
-      {screen === "history" && (
+      {screen ===
+        "history" && (
         <main>
-          <h2>History</h2>
-
-          <p className="sub">
-            Your recent scans.
-          </p>
+          <h2>
+            History
+          </h2>
 
           <div className="card">
             {history.length ? (
               history.map(
-                (item, index) => (
+                (
+                  item,
+                  index
+                ) => (
                   <div
                     className="historyrow"
-                    key={index}
+                    key={
+                      index
+                    }
                   >
-                    <div
-                      className="thumb"
-                      style={{
-                        width: 55,
-                        height: 55,
-                        fontSize: 28,
-                      }}
-                    >
-                      {item.emoji}
+                    <div className="thumb">
+                      {
+                        item.emoji
+                      }
                     </div>
 
                     <div>
                       <strong>
-                        {item.name}
+                        {
+                          item.name
+                        }
                       </strong>
-
-                      <div className="small">
-                        {item.type ===
-                        "packaged"
-                          ? "Packaged food"
-                          : "Food / Meal"}
-                      </div>
                     </div>
 
                     <div className="hscore">
                       {Number(
                         item.score
-                      ).toFixed(1)}
+                      ).toFixed(
+                        1
+                      )}
                     </div>
                   </div>
                 )
               )
             ) : (
-              <p
-                className="sub"
-                style={{
-                  margin: 0,
-                }}
-              >
+              <p>
                 No scans yet.
               </p>
             )}
@@ -1430,85 +2105,60 @@ export default function Page() {
         </main>
       )}
 
-      {screen === "explore" && (
+      {screen ===
+        "explore" && (
         <main>
-          <h2>Explore</h2>
-
-          <p className="sub">
-            Understand food without the
-            lecture.
-          </p>
+          <h2>
+            Explore
+          </h2>
 
           <div className="card softmint">
             <h3>
-              Nutrition labels 🏷️
+              Better label scanning
+              🏷️
             </h3>
 
             <p>
-              Scan the Nutrition Facts
-              panel for a consistent Edible
-              score.
-            </p>
-          </div>
-
-          <div className="card softyellow">
-            <h3>Fiber 🌾</h3>
-
-            <p>
-              Foods with more fiber often
-              provide better fullness and
-              nutritional quality.
-            </p>
-          </div>
-
-          <div className="card softblue">
-            <h3>Protein 💪</h3>
-
-            <p>
-              Protein contributes
-              positively to Edible’s current
-              prototype score.
+              Take a straight,
+              close photo with all
+              nutrition values
+              visible.
             </p>
           </div>
         </main>
       )}
 
-      {screen === "saved" && (
+      {screen ===
+        "saved" && (
         <main>
-          <h2>Saved</h2>
+          <h2>
+            Saved
+          </h2>
 
-          <p className="sub">
-            Your saved foods will appear
+          <div className="card">
+            Saved foods will appear
             here.
-          </p>
-
-          <div className="card softmint">
-            <h3>♡ Saved foods</h3>
-
-            <p>
-              Saving individual scan
-              results is coming next.
-            </p>
           </div>
         </main>
       )}
 
-      {screen === "profile" && (
+      {screen ===
+        "profile" && (
         <main>
           <button
             className="back"
             onClick={() =>
-              setScreen("home")
+              setScreen(
+                "home"
+              )
             }
           >
             ← Home
           </button>
 
-          <h2>Edible</h2>
-
-          <p className="sub">
-            Know what you eat.
-          </p>
+          <h2>
+            Edible
+          </h2>
 
           <div className="card softmint">
             <h3>
@@ -1516,23 +2166,9 @@ export default function Page() {
             </h3>
 
             <p>
-              Nutrition-label OCR runs on
-              your device without paid AI
-              credits.
-            </p>
-          </div>
-
-          <div className="card">
-            <h3>
-              Health score
-            </h3>
-
-            <p className="small">
-              Scores are generated from
-              Edible’s prototype
-              deterministic nutrition
-              formula. They are not medical
-              advice.
+              OCR runs directly on
+              your device without
+              paid API credits.
             </p>
           </div>
         </main>
@@ -1541,58 +2177,78 @@ export default function Page() {
       <nav className="nav">
         <button
           className={
-            screen === "home"
+            screen ===
+            "home"
               ? "on"
               : ""
           }
           onClick={() =>
-            setScreen("home")
+            setScreen(
+              "home"
+            )
           }
         >
           ⌂
-          <small>Home</small>
+          <small>
+            Home
+          </small>
         </button>
 
         <button
           className={
-            screen === "explore"
+            screen ===
+            "explore"
               ? "on"
               : ""
           }
           onClick={() =>
-            setScreen("explore")
+            setScreen(
+              "explore"
+            )
           }
         >
           ⌕
-          <small>Explore</small>
+          <small>
+            Explore
+          </small>
         </button>
 
         <button
           className={
-            screen === "saved"
+            screen ===
+            "saved"
               ? "on"
               : ""
           }
           onClick={() =>
-            setScreen("saved")
+            setScreen(
+              "saved"
+            )
           }
         >
           ♡
-          <small>Saved</small>
+          <small>
+            Saved
+          </small>
         </button>
 
         <button
           className={
-            screen === "profile"
+            screen ===
+            "profile"
               ? "on"
               : ""
           }
           onClick={() =>
-            setScreen("profile")
+            setScreen(
+              "profile"
+            )
           }
         >
           ◉
-          <small>Profile</small>
+          <small>
+            Profile
+          </small>
         </button>
       </nav>
     </div>
