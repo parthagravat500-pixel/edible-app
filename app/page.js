@@ -57,7 +57,10 @@ const demoMap = {
     summary:
       "Useful energy, but low in fiber and protein on its own.",
     good: ["Simple carbohydrate source", "Low fat"],
-    know: ["Low fiber", "Best paired with dal or vegetables"],
+    know: [
+      "Low fiber",
+      "Best paired with dal or vegetables",
+    ],
   },
 
   dal: {
@@ -174,7 +177,7 @@ function calculateScore(n) {
   const protein = Number(n.protein_g || 0);
   const fiber = Number(n.fiber_g || 0);
   const sugar = Number(n.sugar_g || 0);
-  const saturatedFat = Number(n.saturated_fat_g || 0);
+  const sat = Number(n.saturated_fat_g || 0);
   const sodium = Number(n.sodium_mg || 0);
 
   let score = 7;
@@ -183,7 +186,7 @@ function calculateScore(n) {
   score += Math.min(protein, 25) * 0.06;
 
   score -= Math.max(0, sugar - 8) * 0.08;
-  score -= Math.max(0, saturatedFat - 4) * 0.12;
+  score -= Math.max(0, sat - 4) * 0.12;
   score -= Math.max(0, sodium - 350) * 0.0015;
 
   return Number(
@@ -221,26 +224,19 @@ function getLines(text) {
     .filter(Boolean);
 }
 
-function findLabelIndex(lines, patterns) {
-  return lines.findIndex((line) =>
+function valueNearLabel(lines, patterns, unit = "") {
+  const index = lines.findIndex((line) =>
     patterns.some((pattern) =>
       pattern.test(line)
     )
   );
-}
 
-function extractValueFromLine(
-  line,
-  patterns,
-  unit = ""
-) {
-  let cleaned = line;
+  if (index < 0) return 0;
+
+  let cleaned = lines[index];
 
   for (const pattern of patterns) {
-    cleaned = cleaned.replace(
-      pattern,
-      " "
-    );
+    cleaned = cleaned.replace(pattern, " ");
   }
 
   let regex;
@@ -256,70 +252,21 @@ function extractValueFromLine(
       /<?\s*(\d+(?:[.,]\d+)?)/;
   }
 
-  const match = cleaned.match(regex);
+  let match = cleaned.match(regex);
 
-  return match
-    ? numberFrom(match[1])
-    : 0;
-}
-
-function valueNearLabel(
-  lines,
-  patterns,
-  unit = ""
-) {
-  const index = findLabelIndex(
-    lines,
-    patterns
-  );
-
-  if (index < 0) return 0;
-
-  const sameLine =
-    extractValueFromLine(
-      lines[index],
-      patterns,
-      unit
-    );
-
-  if (sameLine > 0) {
-    return sameLine;
+  if (match) {
+    return numberFrom(match[1]);
   }
-
-  /*
-    OCR sometimes puts nutrient name
-    and value on separate lines.
-  */
 
   for (
     let i = index + 1;
-    i <=
-    Math.min(
-      index + 2,
-      lines.length - 1
-    );
+    i <= Math.min(index + 2, lines.length - 1);
     i++
   ) {
-    let regex;
-
-    if (unit === "mg") {
-      regex =
-        /<?\s*(\d+(?:[.,]\d+)?)\s*mg/i;
-    } else if (unit === "g") {
-      regex =
-        /<?\s*(\d+(?:[.,]\d+)?)\s*g/i;
-    } else {
-      regex =
-        /<?\s*(\d+(?:[.,]\d+)?)/;
-    }
-
-    const match =
-      lines[i].match(regex);
+    match = lines[i].match(regex);
 
     if (match) {
-      return numberFrom(
-        match[1]
-      );
+      return numberFrom(match[1]);
     }
   }
 
@@ -327,333 +274,96 @@ function valueNearLabel(
 }
 
 function parseCalories(lines) {
-  const index = findLabelIndex(
-    lines,
-    [
-      /\bcalories\b/i,
-      /\benergy\b/i,
-    ]
+  const index = lines.findIndex((line) =>
+    /\b(calories|energy)\b/i.test(line)
   );
 
-  if (index < 0) {
-    return 0;
-  }
+  if (index < 0) return 0;
 
-  const sameLine =
-    lines[index].match(
-      /(?:calories|energy)\D*(\d{2,4})/i
-    );
+  const sameLine = lines[index].match(
+    /(?:calories|energy)\D*(\d{2,4})/i
+  );
 
   if (sameLine) {
-    return numberFrom(
-      sameLine[1]
-    );
+    return numberFrom(sameLine[1]);
   }
 
   for (
     let i = index + 1;
-    i <=
-    Math.min(
-      index + 3,
-      lines.length - 1
-    );
+    i <= Math.min(index + 3, lines.length - 1);
     i++
   ) {
     const match =
-      lines[i].match(
-        /\b(\d{2,4})\b/
-      );
+      lines[i].match(/\b(\d{2,4})\b/);
 
     if (match) {
-      return numberFrom(
-        match[1]
-      );
+      return numberFrom(match[1]);
     }
   }
 
   return 0;
 }
 
-function parseServing(lines) {
-  const index =
-    findLabelIndex(lines, [
-      /serving\s*size/i,
-    ]);
-
-  if (index < 0) {
-    return "";
-  }
-
-  let value = lines[index]
-    .replace(
-      /.*serving\s*size\s*[:\-]?/i,
-      ""
-    )
-    .trim();
-
-  if (
-    !value ||
-    value.length < 2
-  ) {
-    value =
-      lines[index + 1] || "";
-  }
-
-  return value;
-}
-
 function parseNutrition(text) {
-  const lines =
-    getLines(text);
+  const lines = getLines(text);
 
-  const calories =
-    parseCalories(lines);
+  return {
+    calories: parseCalories(lines),
 
-  const fat_g =
-    valueNearLabel(
+    protein_g: valueNearLabel(
+      lines,
+      [/protein/i],
+      "g"
+    ),
+
+    carbs_g: valueNearLabel(
+      lines,
+      [
+        /total\s*carb(?:ohydrate)?s?\.?/i,
+        /carbohydrates?/i,
+      ],
+      "g"
+    ),
+
+    fat_g: valueNearLabel(
       lines,
       [/total\s*fat/i],
       "g"
-    );
+    ),
 
-  const saturated_fat_g =
-    valueNearLabel(
+    saturated_fat_g: valueNearLabel(
       lines,
       [
         /saturated\s*fat/i,
         /sat\.?\s*fat/i,
       ],
       "g"
-    );
+    ),
 
-  const sodium_mg =
-    valueNearLabel(
-      lines,
-      [/sodium/i],
-      "mg"
-    );
-
-  let carbs_g =
-    valueNearLabel(
-      lines,
-      [
-        /total\s*carb(?:ohydrate)?s?\.?/i,
-        /total\s*carbohydrate/i,
-      ],
-      "g"
-    );
-
-  if (!carbs_g) {
-    carbs_g =
-      valueNearLabel(
-        lines,
-        [/carbohydrates?/i],
-        "g"
-      );
-  }
-
-  let fiber_g =
-    valueNearLabel(
+    fiber_g: valueNearLabel(
       lines,
       [
         /dietary\s*fib(?:er|re)/i,
+        /\bfib(?:er|re)\b/i,
       ],
       "g"
-    );
+    ),
 
-  if (!fiber_g) {
-    fiber_g =
-      valueNearLabel(
-        lines,
-        [/\bfib(?:er|re)\b/i],
-        "g"
-      );
-  }
-
-  let sugar_g =
-    valueNearLabel(
+    sugar_g: valueNearLabel(
       lines,
-      [/total\s*sugars?/i],
+      [
+        /total\s*sugars?/i,
+        /\bsugars?\b/i,
+      ],
       "g"
-    );
+    ),
 
-  if (!sugar_g) {
-    sugar_g =
-      valueNearLabel(
-        lines,
-        [/\bsugars?\b/i],
-        "g"
-      );
-  }
-
-  const protein_g =
-    valueNearLabel(
+    sodium_mg: valueNearLabel(
       lines,
-      [/protein/i],
-      "g"
-    );
-
-  return {
-    serving:
-      parseServing(lines),
-
-    nutrition: {
-      calories,
-      protein_g,
-      carbs_g,
-      fat_g,
-      saturated_fat_g,
-      fiber_g,
-      sugar_g,
-      sodium_mg,
-    },
-  };
-}
-
-function chooseValue(
-  primary,
-  secondary,
-  fallback
-) {
-  if (Number(primary) > 0) {
-    return Number(primary);
-  }
-
-  if (Number(secondary) > 0) {
-    return Number(secondary);
-  }
-
-  if (Number(fallback) > 0) {
-    return Number(fallback);
-  }
-
-  return 0;
-}
-
-function mergeNutrition(
-  tight,
-  medium,
-  full
-) {
-  const result = {
-    calories: chooseValue(
-      tight.calories,
-      medium.calories,
-      full.calories
-    ),
-
-    protein_g: chooseValue(
-      tight.protein_g,
-      medium.protein_g,
-      full.protein_g
-    ),
-
-    carbs_g: chooseValue(
-      tight.carbs_g,
-      medium.carbs_g,
-      full.carbs_g
-    ),
-
-    fat_g: chooseValue(
-      tight.fat_g,
-      medium.fat_g,
-      full.fat_g
-    ),
-
-    saturated_fat_g:
-      chooseValue(
-        tight.saturated_fat_g,
-        medium.saturated_fat_g,
-        full.saturated_fat_g
-      ),
-
-    fiber_g: chooseValue(
-      tight.fiber_g,
-      medium.fiber_g,
-      full.fiber_g
-    ),
-
-    sugar_g: chooseValue(
-      tight.sugar_g,
-      medium.sugar_g,
-      full.sugar_g
-    ),
-
-    sodium_mg: chooseValue(
-      tight.sodium_mg,
-      medium.sodium_mg,
-      full.sodium_mg
+      [/sodium/i],
+      "mg"
     ),
   };
-
-  /*
-    Sanity corrections.
-  */
-
-  if (
-    result.carbs_g > 0 &&
-    result.fiber_g > result.carbs_g
-  ) {
-    result.carbs_g =
-      chooseValue(
-        medium.carbs_g,
-        full.carbs_g,
-        0
-      );
-  }
-
-  if (
-    result.saturated_fat_g >
-    result.fat_g &&
-    result.fat_g > 0
-  ) {
-    result.saturated_fat_g =
-      chooseValue(
-        medium.saturated_fat_g,
-        full.saturated_fat_g,
-        0
-      );
-  }
-
-  return result;
-}
-
-function nutritionLooksReliable(n) {
-  if (
-    !n.calories ||
-    !n.fat_g ||
-    !n.carbs_g ||
-    !n.protein_g ||
-    !n.sodium_mg
-  ) {
-    return false;
-  }
-
-  if (
-    n.fiber_g >
-    n.carbs_g
-  ) {
-    return false;
-  }
-
-  if (
-    n.saturated_fat_g >
-    n.fat_g
-  ) {
-    return false;
-  }
-
-  if (
-    n.calories > 2000 ||
-    n.carbs_g > 250 ||
-    n.fat_g > 150 ||
-    n.protein_g > 150 ||
-    n.sodium_mg > 10000
-  ) {
-    return false;
-  }
-
-  return true;
 }
 
 function buildInsights(n) {
@@ -661,309 +371,116 @@ function buildInsights(n) {
   const know = [];
 
   if (n.fiber_g >= 5) {
-    good.push(
-      "Good source of fiber"
-    );
+    good.push("Good source of fiber");
   }
 
   if (n.protein_g >= 10) {
-    good.push(
-      "Useful protein content"
-    );
+    good.push("Useful protein content");
   }
 
   if (
-    n.sugar_g > 0 &&
+    n.sugar_g >= 0 &&
     n.sugar_g <= 5
   ) {
-    good.push(
-      "Low sugar per serving"
-    );
+    good.push("Low sugar per serving");
   }
 
   if (
     n.sodium_mg > 0 &&
     n.sodium_mg <= 200
   ) {
-    good.push(
-      "Relatively low sodium"
-    );
+    good.push("Relatively low sodium");
   }
 
   if (n.sodium_mg > 500) {
-    know.push(
-      "High sodium per serving"
-    );
+    know.push("High sodium per serving");
   }
 
   if (n.sugar_g > 15) {
-    know.push(
-      "Higher total sugar"
-    );
+    know.push("Higher total sugar");
   }
 
-  if (
-    n.saturated_fat_g > 5
-  ) {
-    know.push(
-      "Higher saturated fat"
-    );
+  if (n.saturated_fat_g > 5) {
+    know.push("Higher saturated fat");
   }
 
   if (
     n.fiber_g > 0 &&
     n.fiber_g < 3
   ) {
-    know.push(
-      "Low fiber"
-    );
+    know.push("Low fiber");
   }
 
   if (!good.length) {
     good.push(
-      "Nutrition label successfully scanned"
+      "Nutrition values verified before scoring"
     );
   }
 
   if (!know.length) {
     know.push(
-      "Check serving size and ingredients for additional context"
+      "Serving size and ingredients can add important context"
     );
   }
 
   return {
-    good:
-      good.slice(0, 3),
-    know:
-      know.slice(0, 3),
+    good: good.slice(0, 3),
+    know: know.slice(0, 3),
   };
 }
 
 function loadTesseract() {
-  return new Promise(
-    (resolve, reject) => {
-      if (window.Tesseract) {
-        resolve(
-          window.Tesseract
-        );
-        return;
-      }
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) {
+      resolve(window.Tesseract);
+      return;
+    }
 
-      const existing =
-        document.getElementById(
-          "edible-tesseract"
-        );
-
-      if (existing) {
-        existing.onload = () =>
-          resolve(
-            window.Tesseract
-          );
-
-        existing.onerror =
-          reject;
-
-        return;
-      }
-
-      const script =
-        document.createElement(
-          "script"
-        );
-
-      script.id =
-        "edible-tesseract";
-
-      script.src =
-        "https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js";
-
-      script.async = true;
-
-      script.onload = () => {
-        if (
-          window.Tesseract
-        ) {
-          resolve(
-            window.Tesseract
-          );
-        } else {
-          reject(
-            new Error(
-              "OCR scanner could not start."
-            )
-          );
-        }
-      };
-
-      script.onerror = () =>
-        reject(
-          new Error(
-            "Could not load the free OCR scanner."
-          )
-        );
-
-      document.head.appendChild(
-        script
+    const existing =
+      document.getElementById(
+        "edible-tesseract"
       );
+
+    if (existing) {
+      existing.onload = () =>
+        resolve(window.Tesseract);
+
+      existing.onerror = reject;
+
+      return;
     }
-  );
-}
 
-function loadImage(file) {
-  return new Promise(
-    (resolve, reject) => {
-      const image =
-        new Image();
+    const script =
+      document.createElement("script");
 
-      const url =
-        URL.createObjectURL(
-          file
-        );
+    script.id = "edible-tesseract";
 
-      image.onload = () => {
-        URL.revokeObjectURL(
-          url
-        );
+    script.src =
+      "https://cdn.jsdelivr.net/npm/tesseract.js@6/dist/tesseract.min.js";
 
-        resolve(image);
-      };
+    script.async = true;
 
-      image.onerror = () => {
-        URL.revokeObjectURL(
-          url
-        );
-
+    script.onload = () => {
+      if (window.Tesseract) {
+        resolve(window.Tesseract);
+      } else {
         reject(
           new Error(
-            "Could not open this image."
+            "OCR scanner could not start."
           )
         );
-      };
-
-      image.src = url;
-    }
-  );
-}
-
-async function preprocessImage(
-  file,
-  cropRatio
-) {
-  const image =
-    await loadImage(file);
-
-  const sourceWidth =
-    Math.round(
-      image.naturalWidth *
-        cropRatio
-    );
-
-  const sourceHeight =
-    image.naturalHeight;
-
-  /*
-    Upscale image substantially
-    for small Nutrition Facts text.
-  */
-
-  const scale = 2.4;
-
-  const canvas =
-    document.createElement(
-      "canvas"
-    );
-
-  canvas.width =
-    Math.round(
-      sourceWidth * scale
-    );
-
-  canvas.height =
-    Math.round(
-      sourceHeight * scale
-    );
-
-  const ctx =
-    canvas.getContext(
-      "2d",
-      {
-        willReadFrequently: true,
       }
-    );
+    };
 
-  ctx.fillStyle = "#ffffff";
+    script.onerror = () =>
+      reject(
+        new Error(
+          "Could not load free OCR."
+        )
+      );
 
-  ctx.fillRect(
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  ctx.drawImage(
-    image,
-    0,
-    0,
-    sourceWidth,
-    sourceHeight,
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  const imageData =
-    ctx.getImageData(
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
-
-  const pixels =
-    imageData.data;
-
-  for (
-    let i = 0;
-    i < pixels.length;
-    i += 4
-  ) {
-    const gray =
-      pixels[i] * 0.299 +
-      pixels[i + 1] * 0.587 +
-      pixels[i + 2] * 0.114;
-
-    let value =
-      (gray - 128) *
-        1.8 +
-      128;
-
-    value = clamp(
-      value,
-      0,
-      255
-    );
-
-    if (value > 205) {
-      value = 255;
-    }
-
-    if (value < 70) {
-      value = 0;
-    }
-
-    pixels[i] = value;
-    pixels[i + 1] = value;
-    pixels[i + 2] = value;
-  }
-
-  ctx.putImageData(
-    imageData,
-    0,
-    0
-  );
-
-  return canvas;
+    document.head.appendChild(script);
+  });
 }
 
 export default function Page() {
@@ -988,12 +505,23 @@ export default function Page() {
   const [progress, setProgress] =
     useState(0);
 
-  const [
-    progressText,
-    setProgressText,
-  ] = useState(
-    "Preparing scanner…"
-  );
+  const [progressText, setProgressText] =
+    useState("Preparing scanner…");
+
+  const [draftNutrition, setDraftNutrition] =
+    useState({
+      calories: 0,
+      protein_g: 0,
+      carbs_g: 0,
+      fat_g: 0,
+      saturated_fat_g: 0,
+      fiber_g: 0,
+      sugar_g: 0,
+      sodium_mg: 0,
+    });
+
+  const [serving, setServing] =
+    useState("Per serving");
 
   useEffect(() => {
     try {
@@ -1011,12 +539,10 @@ export default function Page() {
     const next = [
       {
         name: item.name,
-        emoji:
-          item.emoji || "🍽️",
+        emoji: item.emoji || "🍽️",
         score: item.score,
         type: item.type,
-        date:
-          new Date().toISOString(),
+        date: new Date().toISOString(),
       },
       ...history,
     ].slice(0, 20);
@@ -1035,9 +561,7 @@ export default function Page() {
     if (!file) return;
 
     const url =
-      URL.createObjectURL(
-        file
-      );
+      URL.createObjectURL(file);
 
     setPhoto({
       file,
@@ -1057,60 +581,7 @@ export default function Page() {
     await analyzeLabel(file);
   }
 
-  async function runOCR(
-    Tesseract,
-    image,
-    start,
-    end
-  ) {
-    const response =
-      await Tesseract.recognize(
-        image,
-        "eng",
-        {
-          logger: (
-            message
-          ) => {
-            if (
-              message.status ===
-              "recognizing text"
-            ) {
-              const local =
-                message.progress ||
-                0;
-
-              const total =
-                start +
-                local *
-                  (end -
-                    start);
-
-              const percent =
-                Math.round(
-                  total
-                );
-
-              setProgress(
-                percent
-              );
-
-              setProgressText(
-                `Reading nutrition label… ${percent}%`
-              );
-            }
-          },
-        }
-      );
-
-    return (
-      response?.data?.text ||
-      ""
-    );
-  }
-
-  async function analyzeLabel(
-    file
-  ) {
+  async function analyzeLabel(file) {
     setError("");
     setProgress(0);
     setScreen("loading");
@@ -1119,206 +590,137 @@ export default function Page() {
       const Tesseract =
         await loadTesseract();
 
-      /*
-        PASS 1
-        Tight crop.
-
-        This deliberately cuts off
-        the per-package column.
-      */
-
       setProgressText(
-        "Reading per-serving column…"
+        "Reading nutrition label…"
       );
 
-      const tightImage =
-        await preprocessImage(
+      const response =
+        await Tesseract.recognize(
           file,
-          0.60
+          "eng",
+          {
+            logger: (message) => {
+              if (
+                message.status ===
+                "recognizing text"
+              ) {
+                const percent =
+                  Math.round(
+                    (message.progress || 0) *
+                      100
+                  );
+
+                setProgress(percent);
+
+                setProgressText(
+                  `Reading nutrition label… ${percent}%`
+                );
+              }
+            },
+          }
         );
 
-      const tightText =
-        await runOCR(
-          Tesseract,
-          tightImage,
-          5,
-          45
-        );
+      const rawText =
+        response?.data?.text || "";
 
       console.log(
-        "EDIBLE TIGHT OCR:",
-        tightText
+        "EDIBLE OCR:",
+        rawText
       );
-
-      /*
-        PASS 2
-        Slightly wider crop in case
-        the first crop cuts a value.
-      */
-
-      setProgressText(
-        "Cross-checking values…"
-      );
-
-      const mediumImage =
-        await preprocessImage(
-          file,
-          0.68
-        );
-
-      const mediumText =
-        await runOCR(
-          Tesseract,
-          mediumImage,
-          45,
-          78
-        );
-
-      console.log(
-        "EDIBLE MEDIUM OCR:",
-        mediumText
-      );
-
-      /*
-        PASS 3
-        Full label only as fallback.
-      */
-
-      setProgressText(
-        "Final verification…"
-      );
-
-      const fullImage =
-        await preprocessImage(
-          file,
-          1
-        );
-
-      const fullText =
-        await runOCR(
-          Tesseract,
-          fullImage,
-          78,
-          98
-        );
-
-      console.log(
-        "EDIBLE FULL OCR:",
-        fullText
-      );
-
-      const tight =
-        parseNutrition(
-          tightText
-        );
-
-      const medium =
-        parseNutrition(
-          mediumText
-        );
-
-      const full =
-        parseNutrition(
-          fullText
-        );
 
       const nutrition =
-        mergeNutrition(
-          tight.nutrition,
-          medium.nutrition,
-          full.nutrition
-        );
+        parseNutrition(rawText);
 
-      console.log(
-        "EDIBLE FINAL:",
-        nutrition
-      );
+      setDraftNutrition(nutrition);
 
-      /*
-        Do not show a health score
-        unless core nutrition fields
-        look believable.
-      */
-
-      if (
-        !nutritionLooksReliable(
-          nutrition
-        )
-      ) {
-        throw new Error(
-          "Edible could not confidently verify all key nutrition values. Try a closer, straight photo of the Nutrition Facts panel."
-        );
-      }
-
-      const score =
-        calculateScore(
-          nutrition
-        );
-
-      const insights =
-        buildInsights(
-          nutrition
-        );
-
-      const serving =
-        tight.serving ||
-        medium.serving ||
-        full.serving ||
-        "Per serving";
-
-      const scanned = {
-        name:
-          "Scanned Packaged Food",
-
-        emoji: "🏷️",
-
-        type:
-          "packaged",
-
-        serving,
-
-        score,
-
-        nutrition,
-
-        summary:
-          "Edible isolated the per-serving nutrition column, cross-checked the label and calculated your score.",
-
-        good:
-          insights.good,
-
-        know:
-          insights.know,
-
-        source:
-          "verified-device-ocr",
-      };
-
-      setProgress(100);
-
-      setResult(
-        scanned
-      );
-
-      saveHistory(
-        scanned
-      );
-
-      setScreen(
-        "result"
-      );
+      setScreen("verify");
     } catch (err) {
       console.error(err);
 
       setError(
-        err?.message ||
-          "Could not reliably read this nutrition label."
+        "Could not read this label. Try another photo."
       );
 
-      setScreen(
-        "scan"
-      );
+      setScreen("scan");
     }
+  }
+
+  function updateField(key, value) {
+    setDraftNutrition((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
+  function finishVerification() {
+    const nutrition = {
+      calories:
+        Number(draftNutrition.calories) || 0,
+
+      protein_g:
+        Number(draftNutrition.protein_g) || 0,
+
+      carbs_g:
+        Number(draftNutrition.carbs_g) || 0,
+
+      fat_g:
+        Number(draftNutrition.fat_g) || 0,
+
+      saturated_fat_g:
+        Number(
+          draftNutrition.saturated_fat_g
+        ) || 0,
+
+      fiber_g:
+        Number(draftNutrition.fiber_g) || 0,
+
+      sugar_g:
+        Number(draftNutrition.sugar_g) || 0,
+
+      sodium_mg:
+        Number(draftNutrition.sodium_mg) || 0,
+    };
+
+    if (
+      !nutrition.calories ||
+      !nutrition.carbs_g ||
+      !nutrition.fat_g ||
+      !nutrition.protein_g
+    ) {
+      setError(
+        "Please verify Calories, Protein, Carbs and Fat before continuing."
+      );
+
+      return;
+    }
+
+    const score =
+      calculateScore(nutrition);
+
+    const insights =
+      buildInsights(nutrition);
+
+    const scanned = {
+      name: "Scanned Packaged Food",
+      emoji: "🏷️",
+      type: "packaged",
+      serving,
+      score,
+      nutrition,
+      summary:
+        "You verified the nutrition values before Edible calculated this score.",
+      good: insights.good,
+      know: insights.know,
+      source: "verified-user-scan",
+    };
+
+    setResult(scanned);
+
+    saveHistory(scanned);
+
+    setError("");
+
+    setScreen("result");
   }
 
   function openDemo(key) {
@@ -1333,51 +735,74 @@ export default function Page() {
   }
 
   function packagedDemo() {
-    const item = {
-      name:
-        "Wholegrain Oat Crunch",
+    setDraftNutrition({
+      calories: 150,
+      protein_g: 2,
+      carbs_g: 15,
+      fat_g: 10,
+      saturated_fat_g: 1.5,
+      fiber_g: 1,
+      sugar_g: 1,
+      sodium_mg: 220,
+    });
 
-      emoji: "🌾",
+    setServing(
+      "About 17 chips (28g)"
+    );
 
-      type:
-        "packaged",
-
-      serving:
-        "1 serving",
-
-      score: 8.7,
-
-      nutrition: {
-        calories: 370,
-        protein_g: 12,
-        carbs_g: 62,
-        fat_g: 7,
-        saturated_fat_g: 1,
-        fiber_g: 10,
-        sugar_g: 4,
-        sodium_mg: 210,
-      },
-
-      summary:
-        "High fiber with useful protein and relatively low sugar.",
-
-      good: [
-        "High fiber",
-        "Wholegrain base",
-        "Low sugar",
-      ],
-
-      know: [
-        "Moderate sodium",
-      ],
-    };
-
-    setResult(item);
-
-    saveHistory(item);
-
-    setScreen("result");
+    setScreen("verify");
   }
+
+  const fields = [
+    {
+      key: "calories",
+      label: "Calories",
+      unit: "kcal",
+      step: "1",
+    },
+    {
+      key: "protein_g",
+      label: "Protein",
+      unit: "g",
+      step: "0.1",
+    },
+    {
+      key: "carbs_g",
+      label: "Carbs",
+      unit: "g",
+      step: "0.1",
+    },
+    {
+      key: "fat_g",
+      label: "Fat",
+      unit: "g",
+      step: "0.1",
+    },
+    {
+      key: "saturated_fat_g",
+      label: "Saturated Fat",
+      unit: "g",
+      step: "0.1",
+    },
+    {
+      key: "fiber_g",
+      label: "Fiber",
+      unit: "g",
+      step: "0.1",
+    },
+    {
+      key: "sugar_g",
+      label: "Sugar",
+      unit: "g",
+      step: "0.1",
+    },
+    {
+      key: "sodium_mg",
+      label: "Sodium",
+      unit: "mg",
+      step: "1",
+    },
+  ];
 
   return (
     <div className="app">
@@ -1466,7 +891,7 @@ export default function Page() {
 
               <span>
                 {mode === "packaged"
-                  ? "Verified per-serving label scan"
+                  ? "Scan • Verify • Score"
                   : "Meal recognition coming next"}
               </span>
             </div>
@@ -1489,7 +914,7 @@ export default function Page() {
               </strong>
 
               <span>
-                Smart OCR
+                Verify before score
               </span>
             </button>
 
@@ -1544,11 +969,7 @@ export default function Page() {
 
           <div className="cats">
             {demoFoods.map(
-              ([
-                name,
-                emoji,
-                key,
-              ]) => (
+              ([name, emoji, key]) => (
                 <button
                   key={key}
                   className="cat"
@@ -1556,9 +977,7 @@ export default function Page() {
                     openDemo(key)
                   }
                 >
-                  <em>
-                    {emoji}
-                  </em>
+                  <em>{emoji}</em>
 
                   {name}
                 </button>
@@ -1601,15 +1020,16 @@ export default function Page() {
           </h2>
 
           <p className="sub">
-            Keep the complete Nutrition Facts
-            panel straight and clearly visible.
+            Take a clear photo. You’ll
+            verify the detected numbers
+            before the score is calculated.
           </p>
 
           {photo?.url ? (
             <img
               className="preview"
               src={photo.url}
-              alt="Selected label"
+              alt="Selected nutrition label"
             />
           ) : (
             <div className="camera">
@@ -1632,8 +1052,8 @@ export default function Page() {
                 <br />
 
                 <span>
-                  Edible isolates the
-                  per-serving column
+                  Edible will fill the values
+                  for you to verify
                 </span>
               </div>
             </div>
@@ -1682,11 +1102,9 @@ export default function Page() {
               width: "100%",
               marginTop: 10,
             }}
-            onClick={() =>
-              packagedDemo()
-            }
+            onClick={packagedDemo}
           >
-            Try Demo Scan
+            Try Verification Demo
           </button>
         </main>
       )}
@@ -1696,7 +1114,7 @@ export default function Page() {
           <div className="spinner" />
 
           <h2>
-            Understanding your food
+            Reading your label
           </h2>
 
           <p className="sub">
@@ -1725,17 +1143,171 @@ export default function Page() {
               }}
             />
           </div>
+        </main>
+      )}
 
-          <p
-            className="small"
-            style={{
-              textAlign: "center",
-              marginTop: 17,
-            }}
+      {screen === "verify" && (
+        <main>
+          <button
+            className="back"
+            onClick={() =>
+              setScreen("scan")
+            }
           >
-            Checking the per-serving values
-            before showing a score.
+            ← Scanner
+          </button>
+
+          <h2>
+            Verify nutrition
+          </h2>
+
+          <p className="sub">
+            Check these against the label.
+            Tap any number to correct it.
           </p>
+
+          {photo?.url && (
+            <img
+              className="preview"
+              src={photo.url}
+              alt="Nutrition label"
+            />
+          )}
+
+          <div
+            className="card softyellow"
+          >
+            <h3>
+              Quick check 👀
+            </h3>
+
+            <p
+              className="small"
+              style={{
+                marginBottom: 0,
+              }}
+            >
+              OCR can make mistakes, especially
+              on labels with multiple columns.
+              Edible only scores the values
+              after you confirm them.
+            </p>
+          </div>
+
+          <div className="card">
+            <h3>
+              Serving
+            </h3>
+
+            <input
+              value={serving}
+              onChange={(e) =>
+                setServing(e.target.value)
+              }
+              style={{
+                width: "100%",
+                border: "1px solid var(--line)",
+                borderRadius: 14,
+                padding: 14,
+                fontSize: 16,
+                background: "#F8F8F5",
+              }}
+            />
+          </div>
+
+          <div className="card">
+            <h3>
+              Nutrition values
+            </h3>
+
+            <div className="metrics">
+              {fields.map((field) => (
+                <div
+                  className="metric"
+                  key={field.key}
+                >
+                  <small>
+                    {field.label}
+                  </small>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                    }}
+                  >
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step={field.step}
+                      value={
+                        draftNutrition[
+                          field.key
+                        ]
+                      }
+                      onChange={(e) =>
+                        updateField(
+                          field.key,
+                          e.target.value
+                        )
+                      }
+                      style={{
+                        width: "100%",
+                        border: 0,
+                        outline: 0,
+                        background:
+                          "transparent",
+                        fontWeight: 900,
+                        fontSize: 24,
+                        color:
+                          "var(--ink)",
+                      }}
+                    />
+
+                    <strong
+                      style={{
+                        fontSize: 15,
+                      }}
+                    >
+                      {field.unit}
+                    </strong>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {error && (
+            <div className="error">
+              {error}
+            </div>
+          )}
+
+          <button
+            className="primary"
+            style={{
+              width: "100%",
+              padding: 17,
+              marginTop: 5,
+            }}
+            onClick={finishVerification}
+          >
+            ✓ Values Look Correct
+          </button>
+
+          <button
+            className="secondary"
+            style={{
+              width: "100%",
+              marginTop: 10,
+            }}
+            onClick={() =>
+              setScreen("scan")
+            }
+          >
+            Rescan Label
+          </button>
         </main>
       )}
 
@@ -1755,7 +1327,7 @@ export default function Page() {
               <img
                 className="preview"
                 src={photo.url}
-                alt="Analyzed label"
+                alt="Analyzed food"
               />
             )}
 
@@ -1786,8 +1358,7 @@ export default function Page() {
                   background: `conic-gradient(${
                     result.score >= 8
                       ? "var(--leaf)"
-                      : result.score >=
-                        6.5
+                      : result.score >= 6.5
                       ? "#F1C94E"
                       : "#E48A56"
                   } ${
@@ -1802,9 +1373,7 @@ export default function Page() {
                     ).toFixed(1)}
                   </div>
 
-                  <small>
-                    /10
-                  </small>
+                  <small>/10</small>
                 </div>
               </div>
 
@@ -1813,8 +1382,7 @@ export default function Page() {
                   ? "EXCELLENT"
                   : result.score >= 8
                   ? "VERY GOOD"
-                  : result.score >=
-                    6.5
+                  : result.score >= 6.5
                   ? "GOOD"
                   : "FAIR"}
               </div>
@@ -1860,120 +1428,29 @@ export default function Page() {
 
             <div className="card">
               <h3>
-                Nutrition information
+                Verified nutrition
               </h3>
 
               <div className="metrics">
-                <div className="metric">
-                  <small>
-                    Calories
-                  </small>
+                {fields.map((field) => (
+                  <div
+                    className="metric"
+                    key={field.key}
+                  >
+                    <small>
+                      {field.label}
+                    </small>
 
-                  <strong>
-                    {
-                      result.nutrition
-                        .calories
-                    }
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Protein
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .protein_g
-                    }
-                    g
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Carbs
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .carbs_g
-                    }
-                    g
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Fat
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .fat_g
-                    }
-                    g
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Saturated Fat
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .saturated_fat_g
-                    }
-                    g
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Fiber
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .fiber_g
-                    }
-                    g
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Sugar
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .sugar_g
-                    }
-                    g
-                  </strong>
-                </div>
-
-                <div className="metric">
-                  <small>
-                    Sodium
-                  </small>
-
-                  <strong>
-                    {
-                      result.nutrition
-                        .sodium_mg
-                    }
-                    mg
-                  </strong>
-                </div>
+                    <strong>
+                      {
+                        result.nutrition[
+                          field.key
+                        ]
+                      }
+                      {field.unit}
+                    </strong>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -2007,7 +1484,7 @@ export default function Page() {
 
             <div className="card softblue">
               <h3>
-                Verified scan ✓
+                Verified by you ✓
               </h3>
 
               <p
@@ -2016,9 +1493,9 @@ export default function Page() {
                   marginBottom: 0,
                 }}
               >
-                Edible checks key nutrition
-                relationships before displaying
-                the score.
+                The score was calculated only
+                after you confirmed the label
+                values.
               </p>
             </div>
 
@@ -2059,7 +1536,6 @@ export default function Page() {
           <div className="foodgrid">
             <div className="card">
               🌾 Oat Crunch
-
               <div className="score">
                 8.7
               </div>
@@ -2067,7 +1543,6 @@ export default function Page() {
 
             <div className="card">
               🍫 Protein Bar
-
               <div className="score">
                 6.4
               </div>
@@ -2128,13 +1603,13 @@ export default function Page() {
 
           <div className="card softmint">
             <h3>
-              Nutrition labels 🏷️
+              Better accuracy ✓
             </h3>
 
             <p>
-              Edible focuses on the
-              per-serving values when a label
-              has multiple nutrition columns.
+              Edible lets you verify OCR
+              values before calculating a
+              health score.
             </p>
           </div>
         </main>
@@ -2169,8 +1644,9 @@ export default function Page() {
             </h3>
 
             <p>
-              Label OCR runs directly on your
-              device without paid API credits.
+              OCR runs on your device and
+              you verify the values before
+              scoring.
             </p>
           </div>
         </main>
